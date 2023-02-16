@@ -345,9 +345,11 @@ ngx_epoll_init(ngx_cycle_t *cycle, ngx_msec_t timer)
         ngx_epoll_aio_init(cycle, epcf);
 #endif
 
+/*
 #if (NGX_HAVE_EPOLLRDHUP)
         ngx_epoll_test_rdhup(cycle);
 #endif
+*/
     }
 
     if (nevents < epcf->events) {

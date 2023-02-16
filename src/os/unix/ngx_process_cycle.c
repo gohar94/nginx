@@ -331,6 +331,61 @@ ngx_single_process_cycle(ngx_cycle_t *cycle)
     }
 }
 
+// TODO(girfan): Attempt to change worker fork to pthread_create
+struct ngx_worker_thread_args_s {
+    ngx_cycle_t  *cycle;
+    void         *data;
+};
+
+
+typedef struct ngx_worker_thread_args_s  ngx_worker_thread_args_t;
+
+
+static void *
+ngx_worker_thread(void *data)
+{
+    ngx_worker_thread_args_t *args = data;
+    ngx_worker_process_cycle(args->cycle, args->data);
+    return NULL;
+}
+
+
+static ngx_int_t
+ngx_spawn_worker_thread(ngx_cycle_t *cycle, void *data) {
+    int             err;
+    pthread_t       tid;
+    pthread_attr_t  attr;
+
+    err = pthread_attr_init(&attr);
+    if (err) {
+        ngx_log_error(NGX_LOG_ALERT, cycle->log, err,
+                      "pthread_attr_init() failed");
+        return NGX_ERROR;
+    }
+
+    err = pthread_attr_setdetachstate(&attr, PTHREAD_CREATE_DETACHED);
+    if (err) {
+        ngx_log_error(NGX_LOG_ALERT, cycle->log, err,
+                      "pthread_attr_setdetachstate() failed");
+        return NGX_ERROR;
+    }
+
+    ngx_worker_thread_args_t args;
+    args.cycle = cycle;
+    args.data  = data;
+
+    err = pthread_create(&tid, &attr, ngx_worker_thread, &args);
+    if (err) {
+        ngx_log_error(NGX_LOG_ALERT, cycle->log, err,
+                      "pthread_create() failed");
+        return NGX_ERROR;
+    }
+
+    (void) pthread_attr_destroy(&attr);
+
+    return NGX_OK;
+}
+
 
 static void
 ngx_start_worker_processes(ngx_cycle_t *cycle, ngx_int_t n, ngx_int_t type)
@@ -341,11 +396,12 @@ ngx_start_worker_processes(ngx_cycle_t *cycle, ngx_int_t n, ngx_int_t type)
 
     for (i = 0; i < n; i++) {
 
-        ngx_spawn_process(cycle, ngx_worker_process_cycle,
-                          (void *) (intptr_t) i, "worker process", type);
+        ngx_spawn_worker_thread(cycle, (void *) (intptr_t) i);
 
-        ngx_pass_open_channel(cycle);
     }
+
+    for ( ;; )
+        sleep(1000);
 }
 
 
@@ -698,14 +754,24 @@ ngx_master_process_exit(ngx_cycle_t *cycle)
 static void
 ngx_worker_process_cycle(ngx_cycle_t *cycle, void *data)
 {
+    ngx_uint_t        i;
     ngx_int_t worker = (intptr_t) data;
 
     ngx_process = NGX_PROCESS_WORKER;
     ngx_worker = worker;
 
-    ngx_worker_process_init(cycle, worker);
+    // ngx_worker_process_init(cycle, worker);
 
-    ngx_setproctitle("worker process");
+    // ngx_setproctitle("worker process");
+
+    for (i = 0; cycle->modules[i]; i++) {
+        if (cycle->modules[i]->init_process) {
+            if (cycle->modules[i]->init_process(cycle) == NGX_ERROR) {
+                /* fatal */
+                exit(2);
+            }
+        }
+    }
 
     for ( ;; ) {
 
